@@ -28,6 +28,7 @@ Formats de `range` (les formats tirets sont acceptés aussi) :
 
 - Formats de fichiers acceptés : `*.log`, `*.log-*` (rotations), `*.bz2`, `*.gz` — **originaux intacts** (décompression dans un dossier de staging `logs_staging/`, purgé à chaque run).
 - **Scan récursif** des sous-dossiers ; la journée provient du nom de fichier (premier `AAAAMMJJ` trouvé), sinon du chemin, sinon journée « sans date » (`00000000`).
+- **Fichier courant sans date** (`access.log`, `error.log` à la racine) : **inclus** au replay même si un range est demandé — les alertes sont ensuite reclassées d'après la date de leurs évènements, celles hors plage allant dans la section dédiée du rapport. Pour les exclure : `SKIP_SANS_DATE=1 ./analyse_apache_replay.sh ...`.
 - Le nom de l'argument 1 donne le **projet** (préfixe du rapport) ; le paramètre optionnel range figure dans le nom du rapport : plusieurs rapports (sites/périodes) coexistent dans `crowdsec_rapport/`.
 
 ```bash
@@ -52,7 +53,7 @@ Les tops sont alimentés par les **décisions embarquées** dans le JSON des ale
 
 ## Fonctionnement
 
-1. **Staging** — décompression bz2/gz + copie vers `logs_staging/`, regroupées par journée (anti-doublons, garde du range : `kept/skipped` affiché).
+1. **Staging** — décompression bz2/gz + copie vers `logs_staging/`, regroupées par journée (anti-doublons, garde du range : compteurs détaillés affichés — retenus / hors range / sans date).
 2. **Reset + init** — `docker compose down -v` (volumes config + base SQLite supprimés = base vierge), démarrage du conteneur, installation de la collection `crowdsecurity/apache2`.
 3. **Replay** — pour chaque journée (ordre chronologique) : `crowdsec -type apache2 -dsn "file:///var/log/apache2/<journee>/*.log" -no-api` exécuté **dans le conteneur** (mode documenté « injection dans une base existante »), sortie capturée par journée.
 4. **Captures** — après chaque journée : `alerts list -a -o json`, `decisions list -a -o json` + volumes (`volumes.csv`) ; à la fin : captures globales texte.
