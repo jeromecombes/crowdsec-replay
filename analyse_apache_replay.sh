@@ -35,7 +35,7 @@ elif [[ -n $RANGE_A ]]; then
   log "Filtre applique : $RANGE_A"
 fi
 if [[ -n $RANGE_A ]]; then
-  log "Fichiers de rotation du lendemain inclus (le fichier nomme J+1 contient les evenements de J ; le rapport classe les alertes d'apres leur date reelle, y compris les journees hors plage)."
+  log "Fichiers de rotation du lendemain inclus (le fichier nomme J+1 contient les evenements de J ; le rapport classe les alertes d'apres leur date reelle et exclut celles hors plage)."
 fi
 RANGE_LO=""
 RANGE_HI=""
@@ -128,6 +128,8 @@ LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 PROJET = sys.argv[3] if len(sys.argv) > 3 else "logs"
 LEGEND = sys.argv[4] if len(sys.argv) > 4 else ""
 RNAME = sys.argv[5] if len(sys.argv) > 5 else "tout"
+RLO = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6].isdigit() else None
+RHI = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
 
 
 def cscli(args, out_path):
@@ -159,6 +161,13 @@ def day_label(day):
     if re.fullmatch(r"20\d{6}", day):
         return "%s-%s-%s" % (day[:4], day[4:6], day[6:8])
     return "Journée sans date identifiable"
+
+
+def in_range(day):
+    # alertes sans date identifiable : conservees (l'evenement ne peut pas etre situe)
+    if RLO is None or day == "00000000":
+        return True
+    return bool(re.fullmatch(r"20\d{6}", day)) and RLO <= int(day) <= RHI
 
 
 def load_objects(path):
@@ -229,6 +238,7 @@ alerts_files = sorted(glob.glob(os.path.join(REPORT, "alerts_20*.json"))
 days = [re.search(r"alerts_(.+)\.json$", f).group(1) for f in alerts_files]
 
 buckets = {}
+excluded = set()
 prev_ids = set()
 scen_events = {}
 events_total = 0
@@ -247,6 +257,18 @@ for day in days:
     prev_ids.update(cur)
     for aid in new_ids:
         bkey = event_day(cur[aid]) or day
+        if not in_range(bkey):
+            # alertes hors plage : exclues du rapport (totaux et tops portent sur la plage seule)
+            for _dd in (cur[aid].get("decisions") or []):
+                if isinstance(_dd, dict):
+                    for _dk in ("id", "ID", "decision_id"):
+                        if _dk in _dd:
+                            try:
+                                excluded.add(int(_dd[_dk]))
+                            except (TypeError, ValueError):
+                                pass
+                            break
+            continue
         buckets.setdefault(bkey, []).append(aid)
         name = str(cur[aid].get("scenario") or "(scénario inconnu)")
         cell = scen_events.setdefault(name, [0, 0])
@@ -331,6 +353,8 @@ dec_files = sorted(glob.glob(os.path.join(REPORT, "decisions_20*.json"))
                    + glob.glob(os.path.join(REPORT, "decisions_0000*.json")))
 for f in dec_files:
     mday = re.search(r"decisions_(.+)\.json$", f).group(1)
+    if not in_range(mday):
+        continue
     for d in load_objects(f):
         did = None
         for key in ("id", "ID", "decision_id"):
@@ -340,7 +364,7 @@ for f in dec_files:
                     break
                 except (TypeError, ValueError):
                     pass
-        if did is None or did in dec_seen:
+        if did is None or did in dec_seen or did in excluded:
             continue
         dec_seen.add(did)
         total_dec_new += 1
@@ -775,7 +799,7 @@ docker compose exec -T crowdsec cscli alerts list -a > "$REPORT/alerts_all.txt" 
 docker compose exec -T crowdsec cscli decisions list > "$REPORT/decisions_all.txt" 2>&1 || true
 docker compose exec -T crowdsec cscli metrics > "$REPORT/metrics_all.txt" 2>&1 || true
 
-if out=$(python3 "$BASEDIR/replay_report.py" "$REPORT" "$INSPECT_LIMIT" "$PROJET" "$LEGEND" "$RNAME" 2>&1); then
+if out=$(python3 "$BASEDIR/replay_report.py" "$REPORT" "$INSPECT_LIMIT" "$PROJET" "$LEGEND" "$RNAME" "$RANGE_LO" "$RANGE_HI" 2>&1); then
   rapport=${out#RAPPORT:}
   log "Rapport HTML genere : $rapport"
   firefox $rapport &
