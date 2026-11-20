@@ -35,7 +35,7 @@ elif [[ -n $RANGE_A ]]; then
   log "Filtre applique : $RANGE_A"
 fi
 if [[ -n $RANGE_A ]]; then
-  log "Fichiers de rotation du lendemain inclus (le fichier nomme J+1 contient les evenements de J ; au-dela de la plage, ils seront classes en 'hors plage')."
+  log "Fichiers de rotation du lendemain inclus (le fichier nomme J+1 contient les evenements de J ; le rapport classe les alertes d'apres leur date reelle, y compris les journees hors plage)."
 fi
 RANGE_LO=""
 RANGE_HI=""
@@ -128,8 +128,6 @@ LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 PROJET = sys.argv[3] if len(sys.argv) > 3 else "logs"
 LEGEND = sys.argv[4] if len(sys.argv) > 4 else ""
 RNAME = sys.argv[5] if len(sys.argv) > 5 else "tout"
-RLO = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6].isdigit() else None
-RHI = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
 
 
 def cscli(args, out_path):
@@ -161,12 +159,6 @@ def day_label(day):
     if re.fullmatch(r"20\d{6}", day):
         return "%s-%s-%s" % (day[:4], day[4:6], day[6:8])
     return "Journée sans date identifiable"
-
-
-def in_range(day):
-    if RLO is None:
-        return True
-    return bool(re.fullmatch(r"20\d{6}", day)) and day != "00000000" and RLO <= int(day) <= RHI
 
 
 def load_objects(path):
@@ -236,8 +228,7 @@ alerts_files = sorted(glob.glob(os.path.join(REPORT, "alerts_20*.json"))
                       + glob.glob(os.path.join(REPORT, "alerts_0000*.json")))
 days = [re.search(r"alerts_(.+)\.json$", f).group(1) for f in alerts_files]
 
-buckets_in = {}
-buckets_out = {}
+buckets = {}
 prev_ids = set()
 scen_events = {}
 events_total = 0
@@ -256,14 +247,21 @@ for day in days:
     prev_ids.update(cur)
     for aid in new_ids:
         bkey = event_day(cur[aid]) or day
-        tgt = buckets_in if in_range(bkey) else buckets_out
-        tgt.setdefault(bkey, []).append(aid)
+        buckets.setdefault(bkey, []).append(aid)
         name = str(cur[aid].get("scenario") or "(scénario inconnu)")
         cell = scen_events.setdefault(name, [0, 0])
         cell[0] += 1
         cell[1] += as_int(cur[aid].get("events_count"), 0)
         events_total += as_int(cur[aid].get("events_count"), 0)
         found = False
+        # Pays : la decision peut porter le pays, sinon repli sur la source enrichie de l'alerte.
+        alert_cn = ""
+        _src = cur[aid].get("source")
+        if isinstance(_src, dict):
+            for ckey in ("cn", "CN", "country", "Country"):
+                if _src.get(ckey):
+                    alert_cn = str(_src[ckey])
+                    break
         for ddec in (cur[aid].get("decisions") or []):
             if not isinstance(ddec, dict):
                 continue
@@ -295,6 +293,15 @@ for day in days:
                 if ddec.get(ckey):
                     cnv = str(ddec[ckey])
                     break
+            if not cnv:
+                _ddsrc = ddec.get("source")
+                if isinstance(_ddsrc, dict):
+                    for ckey in ("cn", "CN", "country", "Country"):
+                        if _ddsrc.get(ckey):
+                            cnv = str(_ddsrc[ckey])
+                            break
+            if not cnv:
+                cnv = alert_cn
             if cnv:
                 pcell = pays.setdefault(cnv, {"n": 0, "ips": set(), "days": set(), "types": set()})
                 pcell["n"] += 1
@@ -369,8 +376,7 @@ except OSError:
 total_files = sum(as_int(f[1]) for f in replay_rows)
 total_lines = sum(as_int(f[2]) for f in replay_rows)
 days_erreur = sum(1 for f in replay_rows if f[3] and f[3].upper() != "OK")
-total_alerts = sum(len(v) for v in buckets_in.values()) + sum(len(v) for v in buckets_out.values())
-out_count = total_alerts - sum(len(v) for v in buckets_in.values())
+total_alerts = sum(len(v) for v in buckets.values())
 
 
 def build(buckets):
@@ -495,7 +501,7 @@ if total_dec_new:
 else:
     key_rows.append(("Décisions", "0"))
 key_rows.append(("IP sources distinctes (dans les décisions)", fmt_num(len(ips))))
-active = sorted(((len(v), day_label(k)) for k, v in list(buckets_in.items()) + list(buckets_out.items())), reverse=True)
+active = sorted(((len(v), day_label(k)) for k, v in buckets.items()), reverse=True)
 if active and active[0][0] > 0:
     key_rows.append(("Journée la plus active", "%s (%d alerte(s))" % (active[0][1], active[0][0])))
 synth.append("<table class=\"resume\"><tr><th>Indicateur</th><th>Valeur</th></tr>%s</table>" % "".join(
@@ -522,8 +528,7 @@ if days_erreur:
     synth.append("<p class=\"bad\">Attention : %d journée(s) en statut ERREUR — voir la sortie du replay sous « Fichiers rejoués ».</p>" % days_erreur)
 synthese_html = "\n".join(synth)
 
-recap_in, secs_in = build(buckets_in)
-recap_out, secs_out = build(buckets_out)
+recap_rows, secs = build(buckets)
 
 titre = "Rapport CrowdSec Replay — %s" % PROJET
 gen = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -543,40 +548,28 @@ h3{margin:1.2em 0 .2em;font-family:monospace}
 </style></head><body>
 <h1>%s</h1>""" % (esc(titre), esc(titre))
 
-if out_count:
-    meta = ("<p class=\"meta\">Généré le %s · %s · alertes au total : <b>%d</b> · "
-            "dont <b>%d</b> hors de la plage demandée · décisions au total : <b>%d</b></p>"
-            % (esc(gen), esc(LEGEND), total_alerts, out_count, total_dec_new))
-else:
-    meta = ("<p class=\"meta\">Généré le %s · %s · alertes au total : <b>%d</b> · "
-            "décisions au total : <b>%d</b></p>"
-            % (esc(gen), esc(LEGEND), total_alerts, total_dec_new))
+meta = ("<p class=\"meta\">Généré le %s · %s · alertes au total : <b>%d</b> · "
+        "décisions au total : <b>%d</b></p>"
+        % (esc(gen), esc(LEGEND), total_alerts, total_dec_new))
 
 recap_html = "<h2>Récapitulatif (par journée des évènements)</h2>\n"
 recap_html += "<table class=\"recap\"><tr><th>Journée</th><th>Alertes</th></tr>\n"
-recap_html += "\n".join(recap_in) + "\n</table>"
-if buckets_out:
-    recap_html += "\n<p class=\"bad\"><b>%d</b> alerte(s) datent d'évènements hors de la plage demandée : voir <a href='#horsplage'>la section dédiée</a>.</p>" % out_count
+recap_html += "\n".join(recap_rows) + "\n</table>"
 
 replay_html = "<h2>Fichiers rejoués (par journée de fichier)</h2>\n"
 replay_html += "<table class=\"recap\"><tr><th>Journée du fichier</th><th>Fichiers</th><th>Lignes</th><th>Statut</th></tr>\n"
 for flds in replay_rows:
-    lbl = esc(day_label(flds[0])) if re.fullmatch(r"20\d{6}", flds[0]) else esc(flds[0])
+    lbl = esc(day_label(flds[0]))
     replay_html += "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
         lbl, esc(flds[1]), esc(flds[2]), esc(flds[3]))
 replay_html += "\n</table>"
 for flds in replay_rows:
     if len(flds) >= 4 and flds[3] and flds[3].upper() != "OK":
-        lbl = esc(day_label(flds[0])) if re.fullmatch(r"20\d{6}", flds[0]) else esc(flds[0])
+        lbl = esc(day_label(flds[0]))
         replay_html += "\n<h3>Sortie du replay — %s (statut %s)</h3>\n<pre>%s</pre>" % (
             lbl, esc(flds[3]), esc(read_file(os.path.join(REPORT, "replay_%s.log" % flds[0]))))
 
-body = "\n\n".join(secs_in)
-if buckets_out:
-    body += "\n\n<h2 id='horsplage'>Alertes hors de la plage demandée (d'après la date des évènements)</h2>\n"
-    body += "<table class=\"recap\"><tr><th>Journée des évènements</th><th>Alertes</th></tr>\n"
-    body += "\n".join(recap_out) + "\n</table>"
-    body += "\n\n" + "\n\n".join(secs_out)
+body = "\n\n".join(secs)
 
 globales_html = """<h2>Résultats globaux (toute la session)</h2>
 <h3>alerts list -a</h3><pre>%s</pre>
@@ -705,7 +698,7 @@ else:
     print("[i] Fichiers retenus : %d (dont %d sans date)" % (kept, kept_sans_date), file=sys.stderr)
 if kept_sans_date:
     print("[i] Fichiers sans date inclus (ex. access.log courant) : ils seront analyses et les alertes "
-          "reclassées d'après la date de leurs évènements (hors plage -> section dédiée du rapport).", file=sys.stderr)
+          "reclassées d'après la date de leurs évènements.", file=sys.stderr)
 if kept == 0:
     fail("aucun fichier ne correspond a ce range dans " + src_dir)
 PY
@@ -782,7 +775,7 @@ docker compose exec -T crowdsec cscli alerts list -a > "$REPORT/alerts_all.txt" 
 docker compose exec -T crowdsec cscli decisions list > "$REPORT/decisions_all.txt" 2>&1 || true
 docker compose exec -T crowdsec cscli metrics > "$REPORT/metrics_all.txt" 2>&1 || true
 
-if out=$(python3 "$BASEDIR/replay_report.py" "$REPORT" "$INSPECT_LIMIT" "$PROJET" "$LEGEND" "$RNAME" "$RANGE_LO" "$RANGE_HI" 2>&1); then
+if out=$(python3 "$BASEDIR/replay_report.py" "$REPORT" "$INSPECT_LIMIT" "$PROJET" "$LEGEND" "$RNAME" 2>&1); then
   rapport=${out#RAPPORT:}
   log "Rapport HTML genere : $rapport"
   firefox $rapport &
