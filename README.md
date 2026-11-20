@@ -29,6 +29,7 @@ Formats de `range` (les formats tirets sont acceptés aussi) :
 - Formats de fichiers acceptés : `*.log`, `*.log-*` (rotations), `*.bz2`, `*.gz` — **originaux intacts** (décompression dans un dossier de staging `logs_staging/`, purgé à chaque run).
 - **Scan récursif** des sous-dossiers ; la journée provient du nom de fichier (premier `AAAAMMJJ` trouvé), sinon du chemin, sinon journée « sans date » (`00000000`).
 - **Fichier courant sans date** (`access.log`, `error.log` à la racine) : **inclus** au replay même si un range est demandé — les alertes sont ensuite reclassées d'après la date de leurs évènements, celles hors plage allant dans la section dédiée du rapport. Pour les exclure : `SKIP_SANS_DATE=1 ./analyse_apache_replay.sh ...`.
+- **Rotation Linux (`dateext`)** : le fichier nommé `J+1` contient les évènements de `J` (rotation en cours de journée) — quand un range est demandé, le fichier nommé le **lendemain du dernier jour** est donc **inclus** automatiquement (ex. range `20261118` → fichiers `20261118` + `20261119` analysés, plus le fichier courant sans date). Les évènements sont ensuite rattachés à leur journée réelle ; ceux du lendemain (hors plage) apparaissent dans la section dédiée du rapport.
 - Le nom de l'argument 1 donne le **projet** (préfixe du rapport) ; le paramètre optionnel range figure dans le nom du rapport : plusieurs rapports (sites/périodes) coexistent dans `crowdsec_rapport/`.
 
 ```bash

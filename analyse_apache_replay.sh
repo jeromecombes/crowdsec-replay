@@ -34,6 +34,9 @@ if [[ -n $RANGE_A && -n $RANGE_B ]]; then
 elif [[ -n $RANGE_A ]]; then
   log "Filtre applique : $RANGE_A"
 fi
+if [[ -n $RANGE_A ]]; then
+  log "Fichiers de rotation du lendemain inclus (le fichier nomme J+1 contient les evenements de J ; au-dela de la plage, ils seront classes en 'hors plage')."
+fi
 RANGE_LO=""
 RANGE_HI=""
 if [[ -n $RANGE_A ]]; then
@@ -66,11 +69,13 @@ lo, hi = expand(sys.argv[1])
 if sys.argv[2] and sys.argv[2] != sys.argv[1]:
     lo2, hi2 = expand(sys.argv[2])
     lo, hi = min(lo, lo2), max(hi, hi2)
-print(lo, hi)
+# Rotation Linux (dateext) : le fichier nomme hi+1 contient les evenements de la veille
+# (= hi). Il doit donc etre analyse aussi -> borne de selection etendue d'un jour.
+hif = int((datetime.date(hi // 10000, hi // 100 % 100, hi % 100) + datetime.timedelta(days=1)).strftime("%Y%m%d"))
+print(lo, hi, hif)
 PYS
 )
-  RANGE_LO=${bcomps% *}
-  RANGE_HI=${bcomps#* }
+  read -r RANGE_LO RANGE_HI RANGE_HI_FILE <<<"$bcomps"
 fi
 cd "$BASEDIR"
 
@@ -640,6 +645,12 @@ if range_a:
     if range_b and range_b != range_a:
         lo_b, hi_b = expand(range_b)
         lo, hi = min(lo, lo_b), max(hi, hi_b)
+    # Rotation Linux (dateext) : le fichier nomme hi+1 contient les evenements de hi
+    # -> borne de selection des FICHIERS etendue d'un jour (le rapport, lui, garde hi
+    # comme borne des evenements : le surlendemain retourne en 'hors plage').
+    hi_f = int((datetime.date(hi // 10000, hi // 100 % 100, hi % 100) + datetime.timedelta(days=1)).strftime("%Y%m%d"))
+else:
+    hi_f = None
 
 kept = skipped_hors_range = skipped_sans_date = kept_sans_date = 0
 stage_abs = os.path.realpath(stage)
@@ -665,7 +676,7 @@ for root, dirs, files in os.walk(src_dir):
                 skipped_sans_date += 1
                 continue
             kept_sans_date += 1
-        elif lo is not None and not (lo <= int(day) <= hi):
+        elif lo is not None and not (lo <= int(day) <= hi_f):
             skipped_hors_range += 1
             continue
         kept += 1
@@ -734,7 +745,7 @@ printf '' > "$REPORT/volumes.csv"
 days=$(ls "$BASEDIR/logs_staging" | sort)
 for day in $days; do
   if [[ -n $RANGE_LO && $day != 00000000 ]]; then
-    if (( 10#$day < 10#$RANGE_LO || 10#$day > 10#$RANGE_HI )); then
+    if (( 10#$day < 10#$RANGE_LO || 10#$day > 10#${RANGE_HI_FILE:-$RANGE_HI} )); then
       jlabel="${day:0:4}-${day:4:2}-${day:6:2}"
       log "Journee $jlabel hors filtre, ignoree."
       continue
