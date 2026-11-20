@@ -27,6 +27,7 @@ Formats de `range` (les formats tirets sont acceptés aussi) :
 | `2026-10-01 2026-11-18` | idem |
 
 - Formats de fichiers acceptés : `*.log`, `*.log-*` (rotations), `*.bz2`, `*.gz` — **originaux intacts** (décompression dans un dossier de staging `logs_staging/`, purgé à chaque run).
+- **Logs d'erreur ignorés par défaut** (`error.log`, `error.log-<date>`, …, y compris compressés) : aucun intérêt pour les scénarios apache2, ils sont écartés dès le staging pour gagner du temps. Pour les inclure : `SKIP_ERROR_LOGS=0 ./analyse_apache_replay.sh ...`.
 - **Scan récursif** des sous-dossiers ; la journée provient du nom de fichier (premier `AAAAMMJJ` trouvé), sinon du chemin, sinon journée « sans date » (`00000000`).
 - **Fichier courant sans date** (`access.log`, `error.log` à la racine) : **inclus** au replay même si un range est demandé — les alertes sont ensuite reclassées d'après la date de leurs évènements. Pour les exclure : `SKIP_SANS_DATE=1 ./analyse_apache_replay.sh ...`.
 - **Rotation Linux (`dateext`)** : le fichier nommé `J+1` contient les évènements de `J` (rotation en cours de journée) — quand un range est demandé, le fichier nommé le **lendemain du dernier jour** est donc **inclus** automatiquement (ex. range `20261118` → fichiers `20261118` + `20261119` analysés, plus le fichier courant sans date). Les évènements sont rattachés à leur journée réelle dans le rapport.

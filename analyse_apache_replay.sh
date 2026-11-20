@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Replay de logs Apache2 avec CrowdSec (Docker), rapport HTML par journee.
 # Base vierge a chaque execution ; *.log, *.log-*, *.bz2, *.gz acceptes (originaux intacts).
+# Les error.log* sont ignores par defaut (SKIP_ERROR_LOGS=0 pour les inclure).
 # Usage : ./analyse_apache_replay.sh [dossier_de_logs] [range]   (defaut : ./logs)
 #   range : 202610 (mois complet) | 20261001 (jour) | 20261001 20261118 (intervalle inclusif)
 #   formats tirets acceptes aussi : 2026-10, 2026-10-01, 2026-10-01 2026-11-18
@@ -29,6 +30,9 @@ RANGE_B="${3:-}"
 # SKIP_SANS_DATE=1 pour exclure les fichiers sans date AAAAMMJJ (ex. access.log courant).
 # Defaut : inclus au replay ; les alertes sont ensuite reclassées d'après la date des évènements.
 SKIP_SANS_DATE="${SKIP_SANS_DATE:-0}"
+# SKIP_ERROR_LOGS=0 pour inclure les logs d'erreur (error.log, error.log-<date>.bz2/gz).
+# Defaut : ignores dès le staging (aucun interet pour les scenarios apache2, gain de temps).
+SKIP_ERROR_LOGS="${SKIP_ERROR_LOGS:-1}"
 if [[ -n $RANGE_A && -n $RANGE_B ]]; then
   log "Filtre applique : du $RANGE_A au $RANGE_B (inclus)"
 elif [[ -n $RANGE_A ]]; then
@@ -622,11 +626,12 @@ rm -rf "$BASEDIR/crowdsec_rapport"/inspect
 
 # 1) Staging : decompresse bz2/gz (originaux intacts), copie le reste, groupe par journee
 #    La date (AAAAMMJJ) est extraite du nom de fichier ; sans date -> journee "00000000".
-python3 - "$LOGDIR" "$BASEDIR/logs_staging" "$RANGE_A" "$RANGE_B" "$SKIP_SANS_DATE" <<'PY'
+python3 - "$LOGDIR" "$BASEDIR/logs_staging" "$RANGE_A" "$RANGE_B" "$SKIP_SANS_DATE" "$SKIP_ERROR_LOGS" <<'PY'
 import bz2, calendar, datetime, gzip, os, re, shutil, sys
 
 src_dir, stage, range_a, range_b = sys.argv[1], sys.argv[2], sys.argv[3] or "", sys.argv[4] or ""
 skip_sans_date = len(sys.argv) > 5 and sys.argv[5] == "1"
+skip_error = len(sys.argv) <= 6 or sys.argv[6] != "0"
 
 
 def fail(msg):
@@ -669,7 +674,7 @@ if range_a:
 else:
     hi_f = None
 
-kept = skipped_hors_range = skipped_sans_date = kept_sans_date = 0
+kept = skipped_hors_range = skipped_sans_date = kept_sans_date = skipped_error = 0
 stage_abs = os.path.realpath(stage)
 for root, dirs, files in os.walk(src_dir):
     dirs[:] = [d for d in dirs if os.path.realpath(os.path.join(root, d)) != stage_abs]
@@ -684,6 +689,9 @@ for root, dirs, files in os.walk(src_dir):
         elif low.endswith(".gz"):
             opener, stem = gzip.open, fn[:-4]
         elif not re.search(r"\.log(-.*)?$", low):
+            continue
+        if skip_error and "error" in stem.lower():
+            skipped_error += 1
             continue
         rel = os.path.relpath(path, src_dir)
         m = re.search(r"20\d{6}", fn) or re.search(r"20\d{6}", rel)
@@ -720,6 +728,8 @@ elif lo is not None:
           % (kept, kept_sans_date, skipped_hors_range), file=sys.stderr)
 else:
     print("[i] Fichiers retenus : %d (dont %d sans date)" % (kept, kept_sans_date), file=sys.stderr)
+if skipped_error:
+    print("[i] Fichiers error ignores (error.log* ; SKIP_ERROR_LOGS=0 pour les inclure) : %d" % skipped_error, file=sys.stderr)
 if kept_sans_date:
     print("[i] Fichiers sans date inclus (ex. access.log courant) : ils seront analyses et les alertes "
           "reclassées d'après la date de leurs évènements.", file=sys.stderr)
