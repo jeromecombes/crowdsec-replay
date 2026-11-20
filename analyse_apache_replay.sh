@@ -755,6 +755,7 @@ docker compose exec -T crowdsec cscli metrics > "$REPORT/metrics_all.txt" 2>&1 |
 if out=$(python3 "$BASEDIR/replay_report.py" "$REPORT" "$INSPECT_LIMIT" "$PROJET" "$LEGEND" "$RNAME" "$RANGE_LO" "$RANGE_HI" 2>&1); then
   rapport=${out#RAPPORT:}
   log "Rapport HTML genere : $rapport"
+  firefox $rapport &
 else
   err "La generation du rapport HTML a echoue :"
   printf '%s\n' "$out" >&2
